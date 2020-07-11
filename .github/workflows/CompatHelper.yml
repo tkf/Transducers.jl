@@ -15,7 +15,7 @@ jobs:
         with:
           version: 1.4
       - name: Pkg.add("CompatHelper")
-        run: julia -e 'using Pkg; Pkg.add("CompatHelper")'
+        run: julia -e 'using Pkg; pkg"add CompatHelper#13ec956c066a2a21c1f69a7bb1f9f530ae6e1b7d"'
       - name: CompatHelper.main()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
