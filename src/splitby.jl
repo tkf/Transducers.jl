@@ -55,24 +55,33 @@ struct End{T} <: _Element
     value::T
 end
 
+struct PreChunk end
+is_prelude(::PreChunk) = true
+
 struct Chunk{Right}
     right::Right
 end
 is_prelude(::Chunk) = true
+
+struct PreVacant{Left}
+    left::Left
+end
 
 struct Vacant{Left,Right}
     left::Left
     right::Right
 end
 
-start(rf::R_{ReduceSplitBy}, acc) = wrap(rf, Chunk(nothing), start(inner(rf), acc))
+start(rf::R_{ReduceSplitBy}, acc) = wrap(rf, PreChunk(), start(inner(rf), acc))
 
 next(rf::R_{ReduceSplitBy}, acc, input) =
     wrapping(rf, acc) do state, iacc
-        if state.right === nothing
+        if state isa PreChunk
+            acc0 = start(xform(rf).rf, xform(rf).init)
+        elseif state isa PreVacant
             acc0 = start(xform(rf).rf, xform(rf).init)
         else
-            acc0 = something(state.right)
+            acc0 = state.right
         end
         if xform(rf).f(input)
             acc1 = next(xform(rf).rf, acc0, End(input))
@@ -81,26 +90,38 @@ next(rf::R_{ReduceSplitBy}, acc, input) =
                 y = complete(xform(rf).rf, acc1)
                 iacc′ = next(inner(rf), iacc, y)
                 left = state.left
+            elseif state isa PreVacant
+                y = complete(xform(rf).rf, acc1)
+                iacc′ = next(inner(rf), iacc, y)
+                left = state.left
             else
                 iacc′ = iacc
                 left = acc1
             end
-            (Vacant(left, nothing), iacc′)
+            (PreVacant(left), iacc′)
         else
-            right = Some(next(xform(rf).rf, acc0, Bulk(input)))
-            ((@set state.right = right), iacc)
+            right = next(xform(rf).rf, acc0, Bulk(input))
+            if state isa PreChunk
+                (Chunk(right), iacc)
+            elseif state isa Chunk
+                (Chunk(right), iacc)
+            elseif state isa PreVacant
+                (Vacant(state.left, right), iacc)
+            else
+                (Vacant(state.left, right), iacc)
+            end
         end
     end
 
 function complete(rf::R_{ReduceSplitBy}, acc)
     state, iacc1 = unwrap(rf, acc)
-    if state.right === nothing
+    if state isa Union{PreChunk,PreVacant}
         iacc2 = iacc1
     else
-        yr = complete(xform(rf).rf, something(state.right))
+        yr = complete(xform(rf).rf, state.right)
         iacc2 = next(inner(rf), iacc1, yr)
     end
-    if state isa Vacant
+    if state isa Union{PreVacant,Vacant}
         # @show state.left
         yl = complete(inner(rf), state.left)
         # TODO: Is it OK to always use DefaultInit? Is there a better way?
@@ -112,27 +133,49 @@ function complete(rf::R_{ReduceSplitBy}, acc)
     return complete(inner(rf), iacc3)
 end
 
-@inline maybe_combine(_, ::Nothing, ::Nothing) = nothing
-@inline maybe_combine(_, x::Some, ::Nothing) = x
-@inline maybe_combine(_, ::Nothing, x::Some) = x
-@inline maybe_combine(rf::RF, a::Some, b::Some) where {RF} =
-    Some(combine(rf, something(a), something(b)))
-
 function combine(rf::R_{ReduceSplitBy}, a, b)
     a1, a2 = unwrap(rf, a)
     b1, b2 = unwrap(rf, b)
-    if a1 isa Chunk
-        if b1 isa Chunk
-            c1 = Chunk(maybe_combine(xform(rf).rf, a1.right, b1.right))
+    if a1 isa PreChunk
+        c1 = b1
+    elseif a1 isa Chunk
+        if b1 isa PreChunk
+            c1 = a1
+        elseif b1 isa Chunk
+            c1 = Chunk(combine(xform(rf).rf, a1.right, b1.right))
+        elseif b1 isa PreVacant
+            c1 = PreVacant(combine(xform(rf).rf, a1.right, b1.left))
         else
-            left = something(maybe_combine(xform(rf).rf, a1.right, Some(b1.left)))
-            c1 = Vacant(left, b1.right)
+            c1 = Vacant(combine(xform(rf).rf, a1.right, b1.left), b1.right)
+        end
+    elseif a1 isa PreVacant
+        if b1 isa PreChunk
+            c1 = a1
+        elseif b1 isa Chunk
+            c1 = Vacant(a1.left, b1.right)
+        elseif b1 isa PreVacant
+            acc = b1.left
+            y = complete(xform(rf).rf, acc)
+            a2 = next(inner(rf), a2, y)
+            c1 = PreVacant(a1.left)
+        else
+            acc = b1.left
+            y = complete(xform(rf).rf, acc)
+            a2 = next(inner(rf), a2, y)
+            c1 = Vacant(a1.left, b1.right)
         end
     else
-        if b1 isa Chunk
-            c1 = Vacant(a1.left, maybe_combine(xform(rf).rf, a1.right, b1.right))
+        if b1 isa PreChunk
+            c1 = a1
+        elseif b1 isa Chunk
+            c1 = Vacant(a1.left, combine(xform(rf).rf, a1.right, b1.right))
+        elseif b1 isa PreVacant
+            acc = combine(xform(rf).rf, a1.right, b1.left)
+            y = complete(xform(rf).rf, acc)
+            a2 = next(inner(rf), a2, y)
+            c1 = PreVacant(a1.left)
         else
-            acc = something(maybe_combine(xform(rf).rf, a1.right, Some(b1.left)))
+            acc = combine(xform(rf).rf, a1.right, b1.left)
             y = complete(xform(rf).rf, acc)
             a2 = next(inner(rf), a2, y)
             c1 = Vacant(a1.left, b1.right)
