@@ -78,3 +78,37 @@ end
 Base.length(vov::VecOfVec) = sum(length, vov.vectors)
 
 collect(vov)
+
+# # Adding parallelism
+#
+# Up to now our vector of vector is not parallelizable. For instance if we try `tcollect(vov)` we get an error.
+# To add support, we need to overload two methods from [SplittablesBase.jl](https://github.com/JuliaFolds/SplittablesBase.jl):
+
+import Transducers: SplittablesBase # hide
+import SplittablesBase
+function SplittablesBase.amount(vov::VecOfVec)
+    # return the rough length of a collection
+    sum(length, vov.vectors)
+end
+function SplittablesBase.halve(vov::VecOfVec)
+    # split the collection in two halves of roughy same size
+    if length(vov.vectors) == 1
+        l, r = SplittablesBase.halve(first(vov.vectors))
+        left  = VecOfVec([collect(l)])
+        right = VecOfVec([collect(r)])
+    else
+        isplit = round(Int, length(vov.vectors)/2)
+        left_inds = 1:isplit
+        right_inds = (isplit+1):length(vov.vectors)
+        left  = VecOfVec(vov.vectors[ left_inds])
+        right = VecOfVec(vov.vectors[right_inds])
+    end
+    (left, right)
+end
+
+# Now it works:
+
+tcollect(vov)
+
+@assert collect(vov) == vcat(vov.vectors...) # hide
+@assert tcollect(vov) == collect(vov) # hide
